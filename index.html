@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Montra Pool Inspector</title>
+<style>
+:root{color-scheme:dark;--mint:#86f2be;--ink:#e9f5ee;--muted:#9fb6a9;--line:#294138;background:#0b1410;color:var(--ink);font:16px/1.5 system-ui,sans-serif}
+*{box-sizing:border-box}body{margin:0}main{width:min(920px,94vw);margin:0 auto;padding:48px 0}header{margin-bottom:30px}h1{font-size:clamp(2.4rem,7vw,4.5rem);line-height:1;margin:.25em 0;letter-spacing:-.065em}h2{margin:0 0 16px}p{margin:0 0 12px;color:var(--muted)}a{color:var(--mint)}.eyebrow{font-size:.8rem;letter-spacing:.16em;text-transform:uppercase;color:var(--mint);font-weight:750}.card{padding:22px;border:1px solid var(--line);border-radius:14px;background:#11201a;margin-bottom:16px}form{display:flex;flex-wrap:wrap;gap:10px;align-items:end}label{display:grid;gap:5px;min-width:0;flex:1 1 200px;font-size:.85rem;color:var(--muted)}input,select,button{font:inherit;border-radius:8px;border:1px solid var(--line);padding:10px;color:var(--ink);background:#0b1510}button{color:#0b1510;background:var(--mint);font-weight:750;cursor:pointer}button:disabled{opacity:.5;cursor:wait}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px;margin-bottom:16px}.metric{border:1px solid var(--line);border-radius:10px;padding:14px;overflow-wrap:anywhere}.metric span{color:var(--muted);display:block;font-size:.8rem}.metric strong{font-size:1.4rem}.technical{overflow-wrap:anywhere;font-size:.88rem}.status{margin-top:12px}.error{color:#ffaaaa}output{display:block;margin-top:14px;font-size:1.35rem;overflow-wrap:anywhere;color:var(--mint)}footer{font-size:.85rem;color:var(--muted)}
+</style>
+</head>
+<body><main>
+<header>
+<div class="eyebrow">Elysium mainnet · 99901</div>
+<h1>Montra Pool Inspector</h1>
+<p>Verify a Montra pool, read its fees, and simulate a swap at the same block.</p>
+</header>
+<section class="card" aria-labelledby="lookup-title">
+<h2 id="lookup-title">Find a pool</h2>
+<form id="inspect-form">
+<label>Token contract address<input id="token" required spellcheck="false" autocomplete="off"></label>
+<button>Inspect pool</button>
+</form>
+<p id="status" class="status" role="status"></p>
+</section>
+<section class="card" id="result" hidden>
+<h2 id="pair"></h2>
+<div class="metrics">
+<div class="metric"><span>Effective buy fee</span><strong id="buy"></strong></div>
+<div class="metric"><span>Effective sell fee</span><strong id="sell"></strong></div>
+<div class="metric"><span>Snapshot block</span><strong id="block"></strong></div>
+</div>
+<p class="technical">Registry-verified hook · <a id="hook" target="_blank" rel="noopener noreferrer"></a></p>
+<p id="window" class="technical"></p>
+</section>
+<section class="card" id="quote-panel" hidden>
+<h2>Exact-input quote</h2>
+<form id="quote-form">
+<label>Direction<select id="side"><option value="buy">Buy token</option><option value="sell">Sell token</option></select></label>
+<label id="amount-label"><span id="asset">Input amount</span><input id="amount" value="0.01" inputmode="decimal" required></label>
+<button>Get quote</button>
+</form>
+<output id="quote" aria-live="polite"></output>
+</section>
+<footer>Read-only community demo · <a href="https://montramarkets.xyz/docs/build">Montra Build Guide</a> · <a href="https://montramarkets.xyz/docs/contracts">Contract registry</a></footer>
+</main>
+<script type="module">
+import {TOKEN, inspect, quoteSwap} from './rpc.mjs';
+const get = id => document.getElementById(id);
+let pool;
+const token = get('token'), status = get('status'), side = get('side'), quote = get('quote');
+token.value = TOKEN;
+const updateAsset = () => {
+  if (pool) get('asset').textContent = 'Input amount · ' + (side.value === 'buy' ? pool.quote.label : pool.base.label);
+  quote.textContent = '';
+};
+side.addEventListener('change', updateAsset);
+get('amount').addEventListener('input', () => {quote.textContent = '';});
+get('inspect-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector('button');
+  button.disabled = true;
+  pool = undefined;
+  get('result').hidden = get('quote-panel').hidden = true;
+  status.classList.remove('error');
+  status.textContent = 'Reading registry and pool…';
+  try {
+    pool = await inspect(token.value);
+    get('pair').textContent = pool.base.label + ' / ' + pool.quote.label;
+    for (const [id, fee] of [['buy', pool.buyFee], ['sell', pool.sellFee]]) {
+      get(id).textContent = (fee / 10000).toFixed(4) + '%';
+    }
+    get('block').textContent = BigInt(pool.block).toLocaleString('en-US');
+    get('hook').textContent = pool.hook;
+    get('hook').href = 'https://elysiumexplore.com/address/' + pool.hook;
+    get('window').textContent = pool.earlyUntil ? 'Anti-snipe end (UTC) · ' + new Date(pool.earlyUntil * 1000).toISOString() : 'No anti-snipe window configured.';
+    status.textContent = 'Pool verified against the Montra registry.';
+    updateAsset();
+    get('result').hidden = get('quote-panel').hidden = false;
+  } catch (error) {
+    status.textContent = 'Pool lookup failed. ' + error.message;
+    status.classList.add('error');
+  } finally {button.disabled = false;}
+});
+get('quote-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!pool) return;
+  const button = event.currentTarget.querySelector('button');
+  const snapshot = pool, direction = side.value, amount = get('amount').value;
+  button.disabled = true;
+  quote.classList.remove('error');
+  quote.textContent = 'Simulating at the snapshot block…';
+  try {
+    const result = await quoteSwap(snapshot, direction, amount);
+    if (pool === snapshot && side.value === direction && get('amount').value === amount) quote.textContent = 'Estimated output · ' + result;
+  } catch (error) {
+    if (pool === snapshot && side.value === direction && get('amount').value === amount) {
+      quote.classList.add('error');
+      quote.textContent = 'Quote failed. ' + error.message;
+    }
+  } finally {button.disabled = false;}
+});
+get('inspect-form').requestSubmit();
+</script>
+</body></html>
